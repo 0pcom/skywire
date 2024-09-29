@@ -19,6 +19,7 @@ import (
 	"github.com/skycoin/skywire-utilities/pkg/cipher"
 	"github.com/skycoin/skywire-utilities/pkg/logging"
 	tgbot "github.com/skycoin/skywire/cmd/skywire-cli/commands/rewards/tgbot"
+	errbot "github.com/skycoin/skywire/cmd/skywire-cli/commands/rewards/tgerrorbot"
 )
 
 const yearlyTotalRewards int = 408000
@@ -68,7 +69,7 @@ type rewardData struct {
 
 func init() {
 	RootCmd.AddCommand(
-		tgbot.RootCmd,
+		tgbot.RootCmd,errbot.RootCmd,
 	)
 	RootCmd.Flags().SortFlags = false
 	RootCmd.Flags().StringVarP(&logLvl, "loglvl", "s", "info", "[ debug | warn | error | fatal | panic | trace ] \u001b[0m*")
