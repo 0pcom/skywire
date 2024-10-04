@@ -69,7 +69,7 @@ type rewardData struct {
 
 func init() {
 	RootCmd.AddCommand(
-		tgbot.RootCmd,errbot.RootCmd,
+		tgbot.RootCmd, errbot.RootCmd,
 	)
 	RootCmd.Flags().SortFlags = false
 	RootCmd.Flags().StringVarP(&logLvl, "loglvl", "s", "info", "[ debug | warn | error | fatal | panic | trace ] \u001b[0m*")
