@@ -9,6 +9,7 @@ import (
 
 	skycoin "github.com/skycoin/skywire/cmd/skycoin/commands"
 	"github.com/skycoin/skywire/cmd/skywire/commands"
+	"github.com/skycoin/skywire/cmd/skywire/tui"
 	"github.com/skycoin/skywire/pkg/flags"
 )
 
@@ -49,6 +50,11 @@ func init() {
 	// help in. Off for --json/--jq/--shape, for `help -r` and `help -d`, for a
 	// pipe or a redirect, and for NO_COLOR or SKYWIRE_NO_HELP_RAIN.
 	flags.InitRain(commands.RootCmd)
+	// --tui browses the command tree and its help interactively, with the rain
+	// animated behind it. Last, so it sits outside the wrappers that decide
+	// what printed help looks like: this decides whether help is printed at
+	// all or shown in a browser.
+	tui.Install(commands.RootCmd)
 	// Use/Short/Version and the subcommand tree are set by the package itself
 	// (cmd/skycoin/commands), which assembles skycoin's commands on skywire's
 	// side rather than importing skycoin's own assembly.
