@@ -1181,7 +1181,25 @@
       '.skywire-browse-window .sbw-bar button{background:#2a2342;color:#cdd2da;border:1px solid #3a3352;border-radius:3px;padding:.3em .55em;cursor:pointer;font:inherit;line-height:1}' +
       '.skywire-browse-window .sbw-bar button:hover:not(:disabled){background:#3a3352;color:#fff}' +
       '.skywire-browse-window .sbw-bar button:disabled{background:#201c2c;color:#5a5470;border-color:#2a2342;cursor:default}' +
+      // Tab strip: a row of tabs above the nav bar. The active tab is brighter and
+      // sits flush with the toolbar below; each tab shows a title + a × close.
+      '.skywire-browse-window .sb-tabstrip{display:flex;align-items:stretch;gap:2px;padding:.3em .4em 0;background:#151019;overflow-x:auto;scrollbar-width:thin}' +
+      '.skywire-browse-window .sb-tab{display:flex;align-items:center;gap:.4em;max-width:200px;min-width:90px;padding:.35em .5em;background:#1b1726;color:#a39cc0;border:1px solid #2a2342;border-bottom:none;border-radius:6px 6px 0 0;cursor:pointer;font:inherit;white-space:nowrap;user-select:none}' +
+      '.skywire-browse-window .sb-tab:hover{background:#231d33;color:#cdd2da}' +
+      '.skywire-browse-window .sb-tab.active{background:#1b1726;color:#fff;border-color:#3a3352}' +
+      '.skywire-browse-window .sb-tab.loading .sb-tab-label::before{content:"\\21bb ";color:#7c83ff;display:inline-block;animation:sbspin 1s linear infinite}' +
+      '@keyframes sbspin{to{transform:rotate(360deg)}}' +
+      '.skywire-browse-window .sb-tab-label{overflow:hidden;text-overflow:ellipsis;flex:1}' +
+      '.skywire-browse-window .sb-tab-close{opacity:.5;padding:0 .25em;border-radius:3px;font-weight:bold}' +
+      '.skywire-browse-window .sb-tab-close:hover{opacity:1;background:#3a3352;color:#fff}' +
+      '.skywire-browse-window .sb-tab-new{padding:.35em .6em;background:transparent;color:#a39cc0;border:none;cursor:pointer;font:inherit;font-size:1.1em}' +
+      '.skywire-browse-window .sb-tab-new:hover{color:#fff}' +
+      '.skywire-browse-window .sb-tab-pane{position:absolute;inset:0;display:none;flex-direction:column;min-height:0}' +
+      '.skywire-browse-window .sb-frame{flex:1;width:100%;border:0;background:#0e0c14}' +
       '</style>' +
+      // Tab strip (browser tabs — multiple pages sharing this window's nav chrome).
+      // Populated by makeTab(); the + opens a new tab.
+      '<div class="sb-tabstrip" id="sb-tabs"><button class="sb-tab-new" id="sb-tab-new" title="new tab">+</button></div>' +
       '<div class="sbw-bar" style="display:flex;gap:.4em;align-items:center;padding:.5em;background:#1b1726;border-bottom:1px solid #2a2342">' +
       '<button id="sb-back" title="back" disabled style="cursor:pointer">◀</button>' +
       '<button id="sb-fwd" title="forward" disabled style="cursor:pointer">▶</button>' +
@@ -1246,23 +1264,25 @@
       // iframe's srcdoc — so the "connecting" panel never reloads the iframe
       // (re-setting srcdoc every tick flashed the iframe's background = strobe).
       // iframe background is dark (not #fff) so any transition is not a white flash.
-      '<div id="sb-frame-wrap" style="position:relative;flex:1;display:flex;min-height:0">' +
-      // Real-origin mode (RFC): NO sandbox — B is a genuine isolated origin that
-      // must have its own storage/cookies/service-worker/secure-context. The old
-      // transcoder keeps the opaque-origin sandbox. Cross-origin isolation between
-      // sites is by ORIGIN (<pk>.mesh.localhost), not the sandbox attribute.
-      '<iframe id="sb-frame" ' + (globalThis.__SKYWIRE_BROWSE_ORIGIN__ ? '' : 'sandbox="allow-scripts allow-forms" ') + 'style="flex:1;width:100%;border:0;background:#0e0c14"></iframe>' +
-      '<div id="sb-connect" style="position:absolute;inset:0;display:none;background:#0e0c14;color:#cdd2da;font:14px/1.6 system-ui,-apple-system,sans-serif;overflow:auto"></div>' +
-      '</div>';
+      // Pane container: one .sb-tab-pane per browser tab is appended here by
+      // makeTab(); only the active pane is shown. Each pane holds its own iframe +
+      // connect overlay, so createBrowser (which finds its overlay via
+      // frame.parentNode) is scoped to its tab automatically.
+      '<div id="sb-frame-wrap" style="position:relative;flex:1;display:flex;min-height:0"></div>';
 
     function $(id) { return wrap.querySelector("#" + id); }
     var wb = makeWin(doc, {
       title: "skynet", root: opts.root, top: opts.top, bottom: opts.bottom, width: "74%", height: "80%", mount: wrap,
       onclose: function () {
-        // Release this window's skysocks-lite sessions/routes (per-window). browser
-        // is hoisted; it exists by the time onclose fires.
-        try { if (browser && browser.winId && globalThis.skywireVisor && globalThis.skywireVisor.closeWindow) { globalThis.skywireVisor.closeWindow(browser.winId); } } catch (e) {}
-        try { if (browser && browser.winId && globalThis.__skywireBrowserPanes) { delete globalThis.__skywireBrowserPanes[browser.winId]; } } catch (e) {}
+        // Release EVERY tab's skysocks-lite sessions/routes (tabs is hoisted; it is
+        // populated by the time onclose fires).
+        try {
+          (tabs || []).forEach(function (t) {
+            if (!t.browser || !t.browser.winId) return;
+            try { if (globalThis.skywireVisor && globalThis.skywireVisor.closeWindow) { globalThis.skywireVisor.closeWindow(t.browser.winId); } } catch (e) {}
+            try { if (globalThis.__skywireBrowserPanes) { delete globalThis.__skywireBrowserPanes[t.browser.winId]; } } catch (e) {}
+          });
+        } catch (e) {}
         if (onClose) onClose();
       }
     });
@@ -1287,29 +1307,108 @@
       if (proxyLog.length > PROXY_LOG_MAX) proxyLog.shift();
       renderProxyLog();
     }
-    var browser = createBrowser({
-      frame: $("sb-frame"), fetchDmsg: fetchDmsg,
-      // Thread the clearnet + self-PK providers from the panel opts so the engine
-      // is host-agnostic: the wasm visor passes none (they fall back to the
-      // skywireVisor.* globals), the native HV UI passes /api/browse-backed ones.
-      fetchClearnet: opts.fetchClearnet, selfPK: opts.selfPK, directViaBackend: opts.directViaBackend,
-      log: function (m) { try { console.log("[skynet] " + m); } catch (e) {} plog(m); },
-      // Reflect the current site into the WinBox title bar.
-      setAddr: function (u) { $("sb-addr").value = u; var t = u.replace(/^https?:\/\//, "").slice(0, 18); try { wb.setTitle(t || "skynet"); } catch (e) {} },
-      // Reflect the site's favicon (fetched over the proxy/dmsg) into the title bar.
-      setIcon: function (u) { try { wb.setIcon(u); } catch (e) {} },
-      // reflect load state into the reload/cancel button (⟳ idle, ✕ while loading)
-      onLoading: function (on) { loading = on; var b = $("sb-reload"); b.textContent = on ? "✕" : "⟳"; b.title = on ? "cancel load" : "reload"; },
-      // enable/disable back/forward to match history position
-      onNavState: function (canBack, canFwd) { $("sb-back").disabled = !canBack; $("sb-fwd").disabled = !canFwd; }
-    });
-    win.browser = browser;
+    // ---- Tabs. Each tab is its own createBrowser + iframe pane; the nav bar,
+    // address input and ⚙ proxy panel all act on the ACTIVE tab. createBrowser is
+    // unchanged (it drives one iframe) — we just run several and switch. ----
+    var tabs = [], activeTab = null, browser = null; // browser = the ACTIVE tab's engine
+    function cur() { return activeTab ? activeTab.browser : null; }
+    function makeTab(activateNow) {
+      var pane = doc.createElement("div");
+      pane.className = "sb-tab-pane";
+      // Real-origin mode: NO sandbox (genuine isolated origin per site); transcoder
+      // fallback keeps the opaque-origin sandbox. Each pane has its own #sb-connect
+      // overlay, found by createBrowser via frame.parentNode — scoped per tab.
+      pane.innerHTML =
+        '<iframe class="sb-frame" ' + (globalThis.__SKYWIRE_BROWSE_ORIGIN__ ? '' : 'sandbox="allow-scripts allow-forms" ') + '></iframe>' +
+        '<div id="sb-connect" style="position:absolute;inset:0;display:none;background:#0e0c14;color:#cdd2da;font:14px/1.6 system-ui,-apple-system,sans-serif;overflow:auto"></div>';
+      $("sb-frame-wrap").appendChild(pane);
+      var iframe = pane.querySelector(".sb-frame");
+      var t = { pane: pane, frame: iframe, btn: null, title: "new tab", url: "", canBack: false, canFwd: false, loading: false, icon: "" };
+      t.browser = createBrowser({
+        frame: iframe, fetchDmsg: fetchDmsg,
+        fetchClearnet: opts.fetchClearnet, selfPK: opts.selfPK, directViaBackend: opts.directViaBackend,
+        log: function (m) { try { console.log("[skynet] " + m); } catch (e) {} plog(m); },
+        setAddr: function (u) {
+          t.url = u; t.title = (u || "").replace(/^https?:\/\//, "").slice(0, 24) || "skynet";
+          if (t.btn) { t.btn.querySelector(".sb-tab-label").textContent = t.title; t.btn.title = u; }
+          if (t === activeTab) { $("sb-addr").value = u; try { wb.setTitle(t.title); } catch (e) {} }
+        },
+        setIcon: function (u) { t.icon = u; if (t === activeTab) { try { wb.setIcon(u); } catch (e) {} } },
+        onLoading: function (on) {
+          t.loading = on;
+          if (t.btn) t.btn.classList.toggle("loading", on);
+          if (t === activeTab) { loading = on; var b = $("sb-reload"); b.textContent = on ? "✕" : "⟳"; b.title = on ? "cancel load" : "reload"; }
+        },
+        onNavState: function (canBack, canFwd) {
+          t.canBack = canBack; t.canFwd = canFwd;
+          if (t === activeTab) { $("sb-back").disabled = !canBack; $("sb-fwd").disabled = !canFwd; }
+        }
+      });
+      try { (globalThis.__skywireBrowserPanes = globalThis.__skywireBrowserPanes || {})[t.browser.winId] = plog; } catch (e) {}
+      var btn = doc.createElement("div"); btn.className = "sb-tab";
+      var lab = doc.createElement("span"); lab.className = "sb-tab-label"; lab.textContent = "new tab";
+      var x = doc.createElement("span"); x.className = "sb-tab-close"; x.title = "close tab"; x.textContent = "×";
+      btn.appendChild(lab); btn.appendChild(x);
+      btn.onclick = function (e) { if (e.target !== x) activate(t); };
+      x.onclick = function (e) { e.stopPropagation(); closeTab(t); };
+      t.btn = btn;
+      $("sb-tabs").insertBefore(btn, $("sb-tab-new"));
+      tabs.push(t);
+      updateTabChrome();
+      if (activateNow) activate(t);
+      return t;
+    }
+    function activate(t) {
+      if (activeTab === t) return;
+      if (activeTab) { activeTab.pane.style.display = "none"; if (activeTab.btn) activeTab.btn.classList.remove("active"); }
+      activeTab = t; browser = t.browser;
+      t.pane.style.display = "flex";
+      if (t.btn) t.btn.classList.add("active");
+      $("sb-addr").value = t.url;
+      $("sb-back").disabled = !t.canBack; $("sb-fwd").disabled = !t.canFwd;
+      loading = t.loading; var rb = $("sb-reload"); rb.textContent = t.loading ? "✕" : "⟳"; rb.title = t.loading ? "cancel load" : "reload";
+      try { wb.setTitle(t.title || "skynet"); if (t.icon) wb.setIcon(t.icon); } catch (e) {}
+      try { $("sb-proxy-pk").value = t.browser.upstream(); } catch (e) {}
+    }
+    function closeTab(t) {
+      var i = tabs.indexOf(t); if (i < 0) return;
+      try { if (t.browser && t.browser.winId && globalThis.skywireVisor && globalThis.skywireVisor.closeWindow) { globalThis.skywireVisor.closeWindow(t.browser.winId); } } catch (e) {}
+      try { if (t.browser && t.browser.winId && globalThis.__skywireBrowserPanes) { delete globalThis.__skywireBrowserPanes[t.browser.winId]; } } catch (e) {}
+      if (t.pane) t.pane.remove(); if (t.btn) t.btn.remove();
+      tabs.splice(i, 1);
+      if (tabs.length === 0) { try { wb.close(); } catch (e) {} return; }
+      if (activeTab === t) { activeTab = null; activate(tabs[Math.min(i, tabs.length - 1)]); }
+      updateTabChrome();
+    }
+    // Hide the tab strip when there's only one tab (reads like the old single-page
+    // browser); show it once a second tab exists.
+    function updateTabChrome() { try { $("sb-tabs").style.display = tabs.length > 1 ? "flex" : "none"; } catch (e) {} }
+    // openInNewTab: used by new-tab button and (later) right-click / ctrl+click /
+    // middle-click on a link inside the page. entry is either a URL string or a
+    // {host,path,scheme} dmsg target.
+    function openInNewTab(target, foreground) {
+      var t = makeTab(!!foreground);
+      if (!activeTab) activate(t);
+      if (typeof target === "string") { t.browser.browseToClearnet(target); }
+      else if (target && target.host) { t.browser.browseTo(target.host, target.path || "/", target.scheme); }
+      else { t.browser.browseTo("home.dmsg", "/"); }
+      return t;
+    }
+    // win.browser resolves to the ACTIVE tab's browser (callers used the single
+    // per-window browser; "the focused tab" preserves that meaning).
+    try { Object.defineProperty(win, "browser", { get: function () { return cur(); }, configurable: true }); } catch (e) {}
+    $("sb-tab-new").onclick = function () { openInNewTab({ host: "home.dmsg", path: "/" }, true); };
+    // Create the initial tab immediately so `browser` (active-tab pointer) is set
+    // before the proxy panel / dyn button read it, and so the deep-link path
+    // (win.browser.browseTo, skipLanding) has a tab to load into.
+    makeTab(true);
     // Register this window's log sink so the wasm visor's skysocks-lite path can
     // push its own connect/route-setup lines (keyed by winId) into THIS window's
     // pane — see emitProxyLog / __skywireProxyLog in cmd/wasm-visor/skysocks_js.go.
     try {
-      var paneReg = (globalThis.__skywireBrowserPanes = globalThis.__skywireBrowserPanes || {});
-      paneReg[browser.winId] = plog;
+      // per-tab winId→plog registration happens in makeTab; here we only install
+      // the shared dispatcher once.
+      globalThis.__skywireBrowserPanes = globalThis.__skywireBrowserPanes || {};
       if (!globalThis.__skywireProxyLog) {
         globalThis.__skywireProxyLog = function (winId, line) {
           var p = (globalThis.__skywireBrowserPanes || {})[winId];
@@ -1332,24 +1431,24 @@
         var slash = rest.indexOf("/");
         var shost = slash >= 0 ? rest.slice(0, slash) : rest;
         var spath = slash >= 0 ? rest.slice(slash) : "/";
-        if (shost) { browser.browseTo(shost, spath || "/", sk[1].toLowerCase()); return; }
+        if (shost) { var bs = cur(); if (bs) bs.browseTo(shost, spath || "/", sk[1].toLowerCase()); return; }
       }
-      var hadScheme = /^https?:\/\//i.test(v), u;
-      try { u = new URL(hadScheme ? v : "http://" + v); } catch (e) { browser.browseTo(v, "/"); return; }
+      var hadScheme = /^https?:\/\//i.test(v), u, b0 = cur(); if (!b0) return;
+      try { u = new URL(hadScheme ? v : "http://" + v); } catch (e) { b0.browseTo(v, "/"); return; }
       var host = u.hostname, path = (u.pathname || "/") + (u.search || "");
       // .dmsg/.skynet host, or a bare 66-hex PK → dmsg/skynet site; else clearnet.
       if (/\.(dmsg|skynet)$/i.test(host) || /^[0-9a-f]{66}$/i.test(host)) {
-        browser.browseTo(host + (u.port ? ":" + u.port : ""), path, (u.protocol || "http:").replace(":", ""));
+        b0.browseTo(host + (u.port ? ":" + u.port : ""), path, (u.protocol || "http:").replace(":", ""));
       } else {
-        browser.browseToClearnet(hadScheme ? v : "https://" + v);
+        b0.browseToClearnet(hadScheme ? v : "https://" + v);
       }
     }
     $("sb-go").onclick = go;
-    $("sb-back").onclick = function () { browser.back(); };
-    $("sb-fwd").onclick = function () { browser.forward(); };
+    $("sb-back").onclick = function () { var b = cur(); if (b) b.back(); };
+    $("sb-fwd").onclick = function () { var b = cur(); if (b) b.forward(); };
     // ⟳ reloads the current page; while a load is in flight it becomes ✕ (cancel).
-    $("sb-reload").onclick = function () { if (loading) browser.cancel(); else browser.reload(); };
-    $("sb-home").onclick = function () { browser.browseTo("home.dmsg", "/"); };
+    $("sb-reload").onclick = function () { var b = cur(); if (!b) return; if (loading) b.cancel(); else b.reload(); };
+    $("sb-home").onclick = function () { var b = cur(); if (b) b.browseTo("home.dmsg", "/"); };
     $("sb-info-t").onclick = function () { var h = $("sb-info-panel"); h.style.display = h.style.display === "none" ? "flex" : "none"; };
     $("sb-info-x").onclick = function () { $("sb-info-panel").style.display = "none"; };
     $("sb-addr").addEventListener("keydown", function (e) { if (e.key === "Enter") go(); });
